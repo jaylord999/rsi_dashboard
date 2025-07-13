@@ -7,9 +7,9 @@ import json
 import os
 
 # ========== CONFIG ==========
+
 st.set_page_config(layout="wide")
 
-# Remove top padding / header
 st.markdown("""
     <style>
         .main > div:first-child {
@@ -29,41 +29,43 @@ st_autorefresh(interval=1000, key="auto_refresh")  # 1 sec refresh
 symbol = "BTCUSDT"
 interval = "1m"
 limit = 60
-starting_capital = 500.0  # ₱500
+starting_capital = 500.0
 
-# JSON log path
+# ========== JSON FILE HANDLING ==========
+
 log_file = "dip_log.json"
-if not os.path.exists(log_file):
-    with open(log_file, "w") as f:
-        json.dump([], f)
-
-# ===== APP STATE MANAGEMENT =====
 state_file = "app_state.json"
 
-def load_state():
-    if os.path.exists(state_file):
-        with open(state_file, "r") as f:
+def load_json_file(path, default):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        save_json_file(path, default)
+        return default
+    try:
+        with open(path, "r") as f:
             return json.load(f)
-    else:
-        return {
-            "balance": starting_capital,
-            "holding": 0.0,
-            "buy_price": 0.0,
-            "buy_log": [],
-            "sell_log": [],
-            "live_prices": [],
-            "trading_mode": "Automatic", # Add default trading mode
-            "buy_range_lower": 0.0,      # Add default buy price point
-            "sell_point": 0.0            # Add default sell price point
-        }
+    except json.JSONDecodeError:
+        return default
 
-def save_state(state):
-    with open(state_file, "w") as f:
-        json.dump(state, f, indent=2)
+def save_json_file(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
-state = load_state()
+# ===== APP STATE MANAGEMENT =====
+
+state = load_json_file(state_file, {
+    "balance": starting_capital,
+    "holding": 0.0,
+    "buy_price": 0.0,
+    "buy_log": [],
+    "sell_log": [],
+    "live_prices": [],
+    "trading_mode": "Automatic",
+    "buy_range_lower": 0.0,
+    "sell_point": 0.0
+})
 
 # ===== GET MARKET DATA =====
+
 def fetch_candles(symbol, interval="1m", limit=60):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     response = requests.get(url)
@@ -75,12 +77,12 @@ def fetch_candles(symbol, interval="1m", limit=60):
     ])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
-    df = df[['open', 'high', 'low', 'close']].astype(float)
-    return df
+    return df[['open', 'high', 'low', 'close']].astype(float)
 
 df = fetch_candles(symbol, interval, limit)
 
 # ===== FETCH LIVE PRICE =====
+
 def fetch_price(symbol="BTCUSDT"):
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     try:
@@ -92,15 +94,15 @@ def fetch_price(symbol="BTCUSDT"):
 
 live_price = fetch_price(symbol)
 
-# Store live price history
 if live_price:
     state["live_prices"].append({
-        "timestamp": pd.Timestamp.now().isoformat(), # Store timestamp as ISO format string
+        "timestamp": pd.Timestamp.now().isoformat(),
         "price": live_price
     })
     state["live_prices"] = state["live_prices"][-60:]
 
 # ===== DETECT DIPS =====
+
 def find_dips(df):
     dips = []
     for i in range(1, len(df)-1):
@@ -111,12 +113,10 @@ def find_dips(df):
 dips = find_dips(df)
 
 # ===== BUY/SELL LOGIC =====
+
 message = "💤 No active trade."
 
-# NEW STRATEGY: Buy if last 2 dips are consecutive
-# NEW STRATEGY: Buy if last 2 dips are consecutive (Automatic Mode)
-if state.get("trading_mode", "Automatic") == "Automatic": # Default to Automatic if not set
-    # BUY: if live price is at or below the specified lower bound (Automatic Mode)
+if state.get("trading_mode", "Automatic") == "Automatic":
     if state["holding"] == 0 and live_price and state.get('buy_range_lower', 0.0) > 0 and live_price <= state.get('buy_range_lower', float('inf')):
         state["buy_price"] = live_price
         state["holding"] = state["balance"] / live_price
@@ -124,7 +124,6 @@ if state.get("trading_mode", "Automatic") == "Automatic": # Default to Automatic
         state["buy_log"].append((len(df) - 1, live_price))
         message = f"✅ Bought at ₱{live_price:.2f}"
 
-    # SELL: if live price is at or above the specified sell point (Automatic Mode)
     if state["holding"] > 0 and live_price and state.get('sell_point', 0.0) > 0 and live_price >= state.get('sell_point', float('inf')):
         state["balance"] = state["holding"] * live_price
         state["holding"] = 0
@@ -132,8 +131,8 @@ if state.get("trading_mode", "Automatic") == "Automatic": # Default to Automatic
         message = f"💰 Sold at ₱{live_price:.2f}"
 
 # ===== LOG DIPS TO JSON =====
-with open(log_file, "r") as f:
-    logged = json.load(f)
+
+logged = load_json_file(log_file, [])
 
 for i, price in dips:
     if {"candle": i, "price": price} not in logged:
@@ -142,10 +141,10 @@ for i, price in dips:
 if message.startswith("✅ Bought"):
     logged = []
 
-with open(log_file, "w") as f:
-    json.dump(logged, f, indent=2)
+save_json_file(log_file, logged)
 
 # ===== PLOT CANDLESTICK CHART =====
+
 fig = go.Figure(data=[go.Candlestick(
     x=df.index,
     open=df['open'],
@@ -156,7 +155,6 @@ fig = go.Figure(data=[go.Candlestick(
     decreasing_line_color='red'
 )])
 
-# Mark dips
 for i, price in dips:
     fig.add_trace(go.Scatter(
         x=[df.index[i]],
@@ -166,7 +164,6 @@ for i, price in dips:
         name="Dip"
     ))
 
-# Mark buy
 if state["buy_log"]:
     last_buy = state["buy_log"][-1]
     fig.add_trace(go.Scatter(
@@ -179,7 +176,6 @@ if state["buy_log"]:
         name="Buy"
     ))
 
-# Mark sell
 if state["sell_log"]:
     last_sell = state["sell_log"][-1]
     fig.add_trace(go.Scatter(
@@ -192,7 +188,6 @@ if state["sell_log"]:
         name="Sell"
     ))
 
-# Add live price marker
 if live_price:
     fig.add_trace(go.Scatter(
         x=[df.index[-1]],
@@ -211,7 +206,6 @@ if live_price:
         annotation_position="top right"
     )
 
-# Update layout
 fig.update_layout(
     xaxis_rangeslider_visible=False,
     yaxis=dict(range=[df['low'].min() * 0.999, df['high'].max() * 1.001]),
@@ -223,10 +217,11 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ===== OPTIONAL MINI LIVE PRICE CHART =====
+# ===== LIVE PRICE MINI-CHART =====
+
 if state["live_prices"]:
     df_live = pd.DataFrame(state["live_prices"])
-    df_live['timestamp'] = pd.to_datetime(df_live['timestamp']) # Convert timestamp back to datetime
+    df_live['timestamp'] = pd.to_datetime(df_live['timestamp'])
     fig_live = go.Figure()
     fig_live.add_trace(go.Scatter(
         x=df_live["timestamp"],
@@ -243,26 +238,22 @@ if state["live_prices"]:
     st.plotly_chart(fig_live, use_container_width=True)
 
 # ===== TRADING CONTROLS AND STATUS =====
+
 st.markdown("### 📊 Trading Controls & Status")
 
-# Add mode selection
 trading_mode = st.radio(
     "Select Trading Mode:",
     ('Automatic', 'Manual'),
     key='trading_mode'
 )
-
-# Store trading mode in state
 state['trading_mode'] = trading_mode
 
-# Add input fields for buy range and sell point
-# Add input fields for buy and sell points
 st.markdown("#### Automatic Trading Settings")
 state['buy_range_lower'] = st.number_input(
     "Buy Price Point (Buy at or below):",
     value=state.get('buy_range_lower', 0.0),
     format="%.2f",
-    key='buy_point_input' # Changed key to be unique
+    key='buy_point_input'
 )
 
 state['sell_point'] = st.number_input(
@@ -276,63 +267,50 @@ col1, col2 = st.columns(2)
 
 with col1:
     if st.button("Manual Buy"):
-        # Manual Buy Logic Placeholder
         if state['balance'] > 0 and live_price:
             state["buy_price"] = live_price
             state["holding"] = state["balance"] / live_price
             state["balance"] = 0
             state["buy_log"].append((len(df) - 1, live_price))
             message = f"✅ Manually Bought at ₱{live_price:.2f}"
-            save_state(state) # Save state immediately after manual action
-            st.experimental_rerun() # Rerun to update display
+            save_json_file(state_file, state)
+            st.experimental_rerun()
 
 with col2:
     if st.button("Manual Sell"):
-        # Manual Sell Logic Placeholder
         if state["holding"] > 0 and live_price:
             state["balance"] = state["holding"] * live_price
             state["holding"] = 0
             state["sell_log"].append((len(df) - 1, live_price))
             message = f"💰 Manually Sold at ₱{live_price:.2f}"
-            save_state(state) # Save state immediately after manual action
-            st.experimental_rerun() # Rerun to update display
-
+            save_json_file(state_file, state)
+            st.experimental_rerun()
 
 st.markdown(f"💼 Current Balance: ₱{state['balance']:.2f}")
 if state["holding"] > 0:
     st.markdown(f"📥 Holding {state['holding']:.6f} BTC bought at ₱{state['buy_price']:.2f}")
 st.info(message)
 
-# ===== SAVE STATE =====
-save_state(state)
+# ===== FINAL STATE SAVE =====
+save_json_file(state_file, state)
 
-# ===== FULL RESET BUTTON =====
+# ===== FULL RESET =====
 st.markdown("---")
 if st.button("🔁 FULL RESET — Start New Simulation"):
-    # 1. Clear all Streamlit session state variables
-    st.session_state.balance = starting_capital
-    st.session_state.holding = 0.0
-    st.session_state.buy_price = 0.0
-    st.session_state.buy_log = []
-    st.session_state.sell_log = []
-    st.session_state.live_prices = []
-
-    # Ensure session state is cleared before rerunning
-    st.experimental_rerun()
-
-
-
-    # 2. Clear dip log file
-    if os.path.exists(log_file):
-        os.remove(log_file)
-
-
-    # 3. Clear other log files
-    for extra_log in ["buy_log.json", "sell_log.json", "trade_log.json"]:
-        if os.path.exists(extra_log):
-            os.remove(extra_log)
-
+    state = {
+        "balance": starting_capital,
+        "holding": 0.0,
+        "buy_price": 0.0,
+        "buy_log": [],
+        "sell_log": [],
+        "live_prices": [],
+        "trading_mode": "Automatic",
+        "buy_range_lower": 0.0,
+        "sell_point": 0.0
+    }
+    save_json_file(state_file, state)
+    for file in [log_file, "buy_log.json", "sell_log.json", "trade_log.json"]:
+        if os.path.exists(file):
+            os.remove(file)
     st.success("✅ Simulation fully reset — all logs cleared.")
     st.experimental_rerun()
-
-
