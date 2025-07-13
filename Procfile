@@ -1,0 +1,1 @@
+web: streamlit run rsi_dashboard.py --server.port $PORT
