@@ -58,7 +58,9 @@ def load_state():
         "sell_point": 0.0,
         "dip_threshold": 300,
         "profit_threshold": 250,
-        "last_trade_index": -1
+        "last_trade_index": -1,
+        "last_anchor_index": -1,
+        "last_anchor_price": 0.0
     }
 
 def save_state(state):
@@ -105,9 +107,6 @@ state['profit_threshold'] = st.number_input("Profit Target (units):", value=stat
 
 message = "🛌 No active trade."
 
-green_anchor_price = None
-anchor_index = None
-
 if strategy_mode == "Manual":
     pass
 
@@ -126,12 +125,17 @@ elif strategy_mode == "Automatic":
         message = f"💰 Auto-Sold at ₱{live_price:.2f}"
 
 elif strategy_mode == "Green Candle Dip Strategy":
-    sub_df = df.iloc[state['last_trade_index']+1:] if state['last_trade_index'] >= 0 else df
-    highest_green = sub_df[(sub_df['close'] > sub_df['open'])].copy()
-    if not highest_green.empty:
-        highest_idx = highest_green['high'].idxmax()
-        green_anchor_price = highest_green.loc[highest_idx, 'close']
-        anchor_index = df.index.get_loc(highest_idx)
+    green_candles = df[df['close'] > df['open']]
+    new_anchor = None
+    for idx in range(len(df)):
+        if df['close'].iloc[idx] > df['open'].iloc[idx]:
+            if df['high'].iloc[idx] > state['last_anchor_price'] and idx > state['last_trade_index']:
+                new_anchor = idx
+                state['last_anchor_index'] = new_anchor
+                state['last_anchor_price'] = df['high'].iloc[idx]
+
+    anchor_index = state['last_anchor_index']
+    green_anchor_price = state['last_anchor_price']
 
     if anchor_index is not None:
         for i in range(anchor_index + 1, len(df)):
