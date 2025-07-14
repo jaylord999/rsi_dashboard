@@ -7,7 +7,6 @@ import json
 import os
 
 # ========== CONFIG ==========
-
 st.set_page_config(layout="wide")
 
 st.markdown("""
@@ -24,47 +23,45 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st_autorefresh(interval=1000, key="auto_refresh")  # 1 sec refresh
+st_autorefresh(interval=1000, key="auto_refresh")
 
 symbol = "BTCUSDT"
 interval = "1m"
 limit = 60
 starting_capital = 500.0
 
-# ========== JSON FILE HANDLING ==========
-
 log_file = "dip_log.json"
+if not os.path.exists(log_file):
+    with open(log_file, "w") as f:
+        json.dump([], f)
+
 state_file = "app_state.json"
 
-def load_json_file(path, default):
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        save_json_file(path, default)
-        return default
-    try:
-        with open(path, "r") as f:
+def load_state():
+    if os.path.exists(state_file):
+        with open(state_file, "r") as f:
             return json.load(f)
-    except json.JSONDecodeError:
-        return default
+    else:
+        return {
+            "balance": starting_capital,
+            "holding": 0.0,
+            "buy_price": 0.0,
+            "buy_log": [],
+            "sell_log": [],
+            "live_prices": [],
+            "trading_mode": "Automatic",
+            "strategy_mode": "Manual",
+            "buy_range_lower": 0.0,
+            "sell_point": 0.0,
+            "dip_threshold": 300,
+            "profit_threshold": 250
+        }
 
-def save_json_file(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+def save_state(state):
+    with open(state_file, "w") as f:
+        json.dump(state, f, indent=2)
 
-# ===== APP STATE MANAGEMENT =====
-
-state = load_json_file(state_file, {
-    "balance": starting_capital,
-    "holding": 0.0,
-    "buy_price": 0.0,
-    "buy_log": [],
-    "sell_log": [],
-    "live_prices": [],
-    "trading_mode": "Automatic",
-    "buy_range_lower": 0.0,
-    "sell_point": 0.0
-})
-
-# ===== GET MARKET DATA =====
+state = load_state()
 
 def fetch_candles(symbol, interval="1m", limit=60):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
@@ -77,23 +74,12 @@ def fetch_candles(symbol, interval="1m", limit=60):
     ])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
-    return df[['open', 'high', 'low', 'close']].astype(float)
+    df = df[['open', 'high', 'low', 'close']].astype(float)
+    return df
 
 df = fetch_candles(symbol, interval, limit)
 
-# ===== FETCH LIVE PRICE =====
-
-def fetch_price(symbol="BTCUSDT"):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    try:
-        response = requests.get(url, timeout=3).json()
-        return float(response["price"])
-    except Exception as e:
-        st.error(f"Failed to fetch live price: {e}")
-        return None
-
-live_price = fetch_price(symbol)
-
+live_price = df['close'].iloc[-1] if not df.empty else None
 if live_price:
     state["live_prices"].append({
         "timestamp": pd.Timestamp.now().isoformat(),
@@ -101,50 +87,70 @@ if live_price:
     })
     state["live_prices"] = state["live_prices"][-60:]
 
-# ===== DETECT DIPS =====
+# === STRATEGY MODES ===
+strategy_mode = st.radio(
+    "🧠 Select Strategy Mode:",
+    ('Manual', 'Automatic', 'Green Candle Dip Strategy'),
+    key='strategy_mode'
+)
+state['strategy_mode'] = strategy_mode
+st.markdown(f"🧩 **Current Strategy Mode**: `{strategy_mode}`")
 
-def find_dips(df):
-    dips = []
-    for i in range(1, len(df)-1):
-        if df['low'][i] < df['low'][i-1] and df['low'][i] < df['low'][i+1]:
-            dips.append((i, df['low'][i]))
-    return dips
+# === Threshold Config ===
+st.markdown("#### Strategy Threshold Settings")
+state['dip_threshold'] = st.number_input("Dip Distance (units):", value=state.get('dip_threshold', 300), step=10)
+state['profit_threshold'] = st.number_input("Profit Target (units):", value=state.get('profit_threshold', 250), step=10)
 
-dips = find_dips(df)
+message = "🛌 No active trade."
 
-# ===== BUY/SELL LOGIC =====
+green_anchor_price = None
+anchor_index = None
 
-message = "💤 No active trade."
+if strategy_mode == "Manual":
+    pass
 
-if state.get("trading_mode", "Automatic") == "Automatic":
+elif strategy_mode == "Automatic":
     if state["holding"] == 0 and live_price and state.get('buy_range_lower', 0.0) > 0 and live_price <= state.get('buy_range_lower', float('inf')):
         state["buy_price"] = live_price
         state["holding"] = state["balance"] / live_price
         state["balance"] = 0
         state["buy_log"].append((len(df) - 1, live_price))
-        message = f"✅ Bought at ₱{live_price:.2f}"
+        message = f"✅ Auto-Bought at ₱{live_price:.2f}"
 
     if state["holding"] > 0 and live_price and state.get('sell_point', 0.0) > 0 and live_price >= state.get('sell_point', float('inf')):
         state["balance"] = state["holding"] * live_price
         state["holding"] = 0
         state["sell_log"].append((len(df) - 1, live_price))
-        message = f"💰 Sold at ₱{live_price:.2f}"
+        message = f"💰 Auto-Sold at ₱{live_price:.2f}"
 
-# ===== LOG DIPS TO JSON =====
+elif strategy_mode == "Green Candle Dip Strategy":
+    for i in range(1, len(df)):
+        current = df.iloc[i]
+        prev = df.iloc[i - 1]
 
-logged = load_json_file(log_file, [])
+        if current['close'] > current['open'] and prev['close'] <= prev['open']:
+            green_anchor_price = current['close']
+            anchor_index = i
 
-for i, price in dips:
-    if {"candle": i, "price": price} not in logged:
-        logged.append({"candle": i, "price": price})
+        if green_anchor_price and state["holding"] == 0:
+            if green_anchor_price - current['low'] >= state['dip_threshold']:
+                state["buy_price"] = current['low']
+                state["holding"] = state["balance"] / current['low']
+                state["balance"] = 0
+                state["buy_log"].append((i, current['low']))
+                message = f"✅ Strategy Buy at ₱{current['low']:.2f} from Green ₱{green_anchor_price:.2f}"
+                break
 
-if message.startswith("✅ Bought"):
-    logged = []
+        if state["holding"] > 0:
+            profit = current['close'] - state["buy_price"]
+            if profit >= state['profit_threshold']:
+                state["balance"] = state["holding"] * current['close']
+                state["holding"] = 0
+                state["sell_log"].append((i, current['close']))
+                message = f"💰 Strategy Sell at ₱{current['close']:.2f} (Profit: ₱{profit:.2f})"
+                break
 
-save_json_file(log_file, logged)
-
-# ===== PLOT CANDLESTICK CHART =====
-
+# === Main Chart ===
 fig = go.Figure(data=[go.Candlestick(
     x=df.index,
     open=df['open'],
@@ -155,17 +161,19 @@ fig = go.Figure(data=[go.Candlestick(
     decreasing_line_color='red'
 )])
 
-for i, price in dips:
+if strategy_mode == "Green Candle Dip Strategy" and green_anchor_price:
     fig.add_trace(go.Scatter(
-        x=[df.index[i]],
-        y=[price],
-        mode="markers",
-        marker=dict(color="orange", size=10),
-        name="Dip"
+        x=[df.index[anchor_index]],
+        y=[green_anchor_price],
+        mode="markers+text",
+        marker=dict(color="lightgreen", size=10),
+        text=["Green Anchor"],
+        textposition="top center",
+        name="Green Anchor"
     ))
 
 if state["buy_log"]:
-    last_buy = state["buy_log"][-1]
+    last_buy = state["buy_log"].pop()
     fig.add_trace(go.Scatter(
         x=[df.index[last_buy[0]]],
         y=[last_buy[1]],
@@ -175,9 +183,10 @@ if state["buy_log"]:
         textposition="top center",
         name="Buy"
     ))
+    state["buy_log"].append(last_buy)
 
 if state["sell_log"]:
-    last_sell = state["sell_log"][-1]
+    last_sell = state["sell_log"].pop()
     fig.add_trace(go.Scatter(
         x=[df.index[last_sell[0]]],
         y=[last_sell[1]],
@@ -187,6 +196,7 @@ if state["sell_log"]:
         textposition="top center",
         name="Sell"
     ))
+    state["sell_log"].append(last_sell)
 
 if live_price:
     fig.add_trace(go.Scatter(
@@ -217,100 +227,63 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# ===== LIVE PRICE MINI-CHART =====
-
-if state["live_prices"]:
-    df_live = pd.DataFrame(state["live_prices"])
-    df_live['timestamp'] = pd.to_datetime(df_live['timestamp'])
-    fig_live = go.Figure()
-    fig_live.add_trace(go.Scatter(
-        x=df_live["timestamp"],
-        y=df_live["price"],
-        mode="lines+markers",
-        name="Live Price"
-    ))
-    fig_live.update_layout(
-        title="📈 Live BTC Price (1s updates)",
-        yaxis_title="Price (USDT)",
-        template="plotly_dark",
-        margin=dict(t=30, b=20)
+# === Full-Day Data Display ===
+@st.cache_data(ttl=300)
+def fetch_full_day():
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=1440"
+    data = requests.get(url).json()
+    df_full = pd.DataFrame(data, columns=[
+        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_volume', 'num_trades',
+        'taker_buy_base', 'taker_buy_quote', 'ignore']
     )
-    st.plotly_chart(fig_live, use_container_width=True)
+    df_full['timestamp'] = pd.to_datetime(df_full['timestamp'], unit='ms')
+    df_full.set_index('timestamp', inplace=True)
+    return df_full[['open', 'high', 'low', 'close']].astype(float)
 
-# ===== TRADING CONTROLS AND STATUS =====
-
-st.markdown("### 📊 Trading Controls & Status")
-
-trading_mode = st.radio(
-    "Select Trading Mode:",
-    ('Automatic', 'Manual'),
-    key='trading_mode'
+st.markdown("---")
+st.markdown("### 🔢 1-Day Full Candlestick Data")
+df_day = fetch_full_day()
+fig_day = go.Figure(data=[go.Candlestick(
+    x=df_day.index,
+    open=df_day['open'],
+    high=df_day['high'],
+    low=df_day['low'],
+    close=df_day['close'],
+    increasing_line_color='green',
+    decreasing_line_color='red'
+)])
+fig_day.update_layout(
+    xaxis_rangeslider_visible=True,
+    yaxis_title="Price (USDT)",
+    template="plotly_dark",
+    title="📈 BTC/USDT - Full Day Candlestick Chart"
 )
-state['trading_mode'] = trading_mode
+st.plotly_chart(fig_day, use_container_width=True)
 
-st.markdown("#### Automatic Trading Settings")
-state['buy_range_lower'] = st.number_input(
-    "Buy Price Point (Buy at or below):",
-    value=state.get('buy_range_lower', 0.0),
-    format="%.2f",
-    key='buy_point_input'
-)
-
-state['sell_point'] = st.number_input(
-    "Sell Price Point (Sell at or above):",
-    value=state.get('sell_point', 0.0),
-    format="%.2f",
-    key='sell_point_input'
-)
-
-col1, col2 = st.columns(2)
-
-with col1:
-    if st.button("Manual Buy"):
-        if state['balance'] > 0 and live_price:
+if strategy_mode == "Manual":
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Manual Buy") and state['balance'] > 0 and live_price:
             state["buy_price"] = live_price
             state["holding"] = state["balance"] / live_price
             state["balance"] = 0
             state["buy_log"].append((len(df) - 1, live_price))
             message = f"✅ Manually Bought at ₱{live_price:.2f}"
-            save_json_file(state_file, state)
+            save_state(state)
             st.experimental_rerun()
-
-with col2:
-    if st.button("Manual Sell"):
-        if state["holding"] > 0 and live_price:
+    with col2:
+        if st.button("Manual Sell") and state["holding"] > 0 and live_price:
             state["balance"] = state["holding"] * live_price
             state["holding"] = 0
             state["sell_log"].append((len(df) - 1, live_price))
             message = f"💰 Manually Sold at ₱{live_price:.2f}"
-            save_json_file(state_file, state)
+            save_state(state)
             st.experimental_rerun()
 
 st.markdown(f"💼 Current Balance: ₱{state['balance']:.2f}")
 if state["holding"] > 0:
-    st.markdown(f"📥 Holding {state['holding']:.6f} BTC bought at ₱{state['buy_price']:.2f}")
+    st.markdown(f"📅 Holding {state['holding']:.6f} BTC bought at ₱{state['buy_price']:.2f}")
 st.info(message)
 
-# ===== FINAL STATE SAVE =====
-save_json_file(state_file, state)
-
-# ===== FULL RESET =====
-st.markdown("---")
-if st.button("🔁 FULL RESET — Start New Simulation"):
-    state = {
-        "balance": starting_capital,
-        "holding": 0.0,
-        "buy_price": 0.0,
-        "buy_log": [],
-        "sell_log": [],
-        "live_prices": [],
-        "trading_mode": "Automatic",
-        "buy_range_lower": 0.0,
-        "sell_point": 0.0
-    }
-    save_json_file(state_file, state)
-    for file in [log_file, "buy_log.json", "sell_log.json", "trade_log.json"]:
-        if os.path.exists(file):
-            os.remove(file)
-    st.success("✅ Simulation fully reset — all logs cleared.")
-    st.experimental_rerun()
+save_state(state)
