@@ -5,8 +5,6 @@ import requests
 from streamlit_autorefresh import st_autorefresh
 import json
 import os
-import time
-from datetime import datetime, timedelta
 
 # ========== CONFIG ========== #
 st.set_page_config(layout="wide")
@@ -52,209 +50,37 @@ def load_state():
         "dip_threshold": 300,
         "profit_threshold": 250,
         "last_anchor_price": 0.0,
-        "anchor_timestamp": "",
-        "last_successful_fetch": None,
-        "api_errors": 0
+        "anchor_timestamp": ""
     }
 
 def save_state(state):
-    try:
-        with open(state_file, "w") as f:
-            json.dump(state, f, indent=2)
-    except Exception as e:
-        st.error(f"Error saving state: {e}")
+    with open(state_file, "w") as f:
+        json.dump(state, f, indent=2)
 
 state = load_state()
 
-# ========== ENHANCED FETCH FUNCTIONS ========== #
-def test_connectivity():
-    """Test basic internet connectivity"""
+# ========== FETCH CANDLE DATA ========== #
+def fetch_candles(symbol, interval="1m", limit=60):
     try:
-        response = requests.get("https://httpbin.org/get", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
-
-def fetch_candles_binance(symbol, interval="1m", limit=60):
-    """Fetch from Binance API with enhanced error handling"""
-    try:
-        url = f"https://api.binance.com/api/v3/klines"
-        params = {
-            'symbol': symbol,
-            'interval': interval,
-            'limit': limit
-        }
-        
-        st.write(f"🔄 Fetching from Binance: {url}")
-        response = requests.get(url, params=params, timeout=10)
-        
-        st.write(f"📡 Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            st.error(f"❌ Binance API returned status {response.status_code}")
-            return pd.DataFrame()
-        
-        data = response.json()
-        
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        data = requests.get(url).json()
         if not data or isinstance(data, dict):
-            st.error(f"❌ Invalid data format from Binance: {type(data)}")
             return pd.DataFrame()
-            
-        if len(data) == 0:
-            st.error("❌ Empty data array from Binance")
-            return pd.DataFrame()
-        
         df = pd.DataFrame(data, columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_asset_volume', 'num_trades',
             'taker_buy_base', 'taker_buy_quote', 'ignore'])
-        
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
-        
-        st.success(f"✅ Successfully fetched {len(df)} candles from Binance")
         return df[['open', 'high', 'low', 'close']].astype(float)
-        
-    except requests.exceptions.Timeout:
-        st.error("⏰ Binance API timeout")
-        return pd.DataFrame()
-    except requests.exceptions.ConnectionError:
-        st.error("🔌 Connection error to Binance API")
-        return pd.DataFrame()
     except Exception as e:
-        st.error(f"❌ Binance API error: {type(e).__name__}: {e}")
+        st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
-
-def fetch_candles_coingecko():
-    """Alternative: Fetch from CoinGecko API"""
-    try:
-        url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-        params = {
-            'vs_currency': 'usd',
-            'days': '1',
-            'interval': 'minutely'
-        }
-        
-        st.write(f"🔄 Fetching from CoinGecko: {url}")
-        response = requests.get(url, params=params, timeout=10)
-        
-        st.write(f"📡 CoinGecko Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            st.error(f"❌ CoinGecko API returned status {response.status_code}")
-            return pd.DataFrame()
-        
-        data = response.json()
-        
-        if 'prices' not in data:
-            st.error("❌ Invalid CoinGecko data format")
-            return pd.DataFrame()
-        
-        # Convert CoinGecko data to OHLC format
-        prices = data['prices']
-        if len(prices) < 60:
-            st.error("❌ Insufficient CoinGecko data")
-            return pd.DataFrame()
-        
-        # Take last 60 data points and create OHLC
-        recent_prices = prices[-60:]
-        ohlc_data = []
-        
-        for i in range(len(recent_prices)):
-            timestamp = recent_prices[i][0]
-            price = recent_prices[i][1]
-            
-            ohlc_data.append({
-                'timestamp': pd.to_datetime(timestamp, unit='ms'),
-                'open': price,
-                'high': price,
-                'low': price,
-                'close': price
-            })
-        
-        df = pd.DataFrame(ohlc_data)
-        df.set_index('timestamp', inplace=True)
-        
-        st.success(f"✅ Successfully fetched {len(df)} price points from CoinGecko")
-        return df[['open', 'high', 'low', 'close']].astype(float)
-        
-    except Exception as e:
-        st.error(f"❌ CoinGecko API error: {type(e).__name__}: {e}")
-        return pd.DataFrame()
-
-def fetch_candles_fallback():
-    """Generate fallback mock data"""
-    st.warning("🔄 Using fallback mock data for demo purposes")
-    
-    # Create mock price data around $95000
-    base_price = 95000
-    timestamps = pd.date_range(end=pd.Timestamp.now(), periods=60, freq='1min')
-    
-    mock_data = []
-    current_price = base_price
-    
-    for ts in timestamps:
-        # Add some random variation
-        import random
-        variation = random.uniform(-500, 500)
-        current_price += variation
-        
-        high = current_price + random.uniform(0, 200)
-        low = current_price - random.uniform(0, 200)
-        close = current_price + random.uniform(-100, 100)
-        
-        mock_data.append({
-            'timestamp': ts,
-            'open': current_price,
-            'high': high,
-            'low': low,
-            'close': close
-        })
-        
-        current_price = close
-    
-    df = pd.DataFrame(mock_data)
-    df.set_index('timestamp', inplace=True)
-    
-    return df[['open', 'high', 'low', 'close']].astype(float)
-
-def fetch_candles(symbol, interval="1m", limit=60):
-    """Main fetch function with multiple fallbacks"""
-    
-    # Show connectivity test
-    if test_connectivity():
-        st.success("✅ Internet connectivity OK")
-    else:
-        st.error("❌ No internet connectivity")
-        return fetch_candles_fallback()
-    
-    # Try Binance first
-    df = fetch_candles_binance(symbol, interval, limit)
-    if not df.empty:
-        state["api_errors"] = 0
-        state["last_successful_fetch"] = datetime.now().isoformat()
-        return df
-    
-    # Try CoinGecko as backup
-    st.warning("🔄 Binance failed, trying CoinGecko...")
-    df = fetch_candles_coingecko()
-    if not df.empty:
-        state["api_errors"] = 0
-        state["last_successful_fetch"] = datetime.now().isoformat()
-        return df
-    
-    # Fallback to mock data
-    st.warning("🔄 All APIs failed, using mock data...")
-    state["api_errors"] = state.get("api_errors", 0) + 1
-    return fetch_candles_fallback()
-
-# ========== FETCH DATA ========== #
-st.markdown("### 📡 API Status")
 
 # Fetch 1-minute data for main chart
 df = fetch_candles(symbol, interval, limit)
 
-# Fetch 1-day data for daily chart (try same sources)
+# Fetch 1-day data for daily chart (1440 minutes = 24 hours)
 df_daily = fetch_candles(symbol, "1m", 1440)
 
 # ========== PRICE TRACKING ========== #
@@ -266,7 +92,7 @@ if not df.empty:
     })
     state["live_prices"] = state["live_prices"][-60:]
 else:
-    st.error("⚠️ No candlestick data available from any source")
+    st.error("⚠️ No candlestick data returned. Check your network or Binance API status.")
     save_state(state)
     st.stop()
 
@@ -563,20 +389,6 @@ with col3:
 
 st.info(message)
 st.success(anchor_status)
-
-# ========== API STATUS ========== #
-st.markdown("---")
-st.markdown("### 📡 API Status")
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown(f"**API Errors**: {state.get('api_errors', 0)}")
-    if state.get('last_successful_fetch'):
-        st.markdown(f"**Last Success**: {state['last_successful_fetch']}")
-
-with col2:
-    st.markdown(f"**Data Points**: {len(df)}")
-    st.markdown(f"**Latest Update**: {df.index[-1] if not df.empty else 'N/A'}")
 
 # ========== TRADING HISTORY ========== #
 if state["buy_log"] or state["sell_log"]:
