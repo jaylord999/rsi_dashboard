@@ -54,7 +54,8 @@ def load_state():
             "buy_range_lower": 0.0,
             "sell_point": 0.0,
             "dip_threshold": 300,
-            "profit_threshold": 250
+            "profit_threshold": 250,
+            "last_trade_index": -1
         }
 
 def save_state(state):
@@ -124,14 +125,15 @@ elif strategy_mode == "Automatic":
         message = f"💰 Auto-Sold at ₱{live_price:.2f}"
 
 elif strategy_mode == "Green Candle Dip Strategy":
-    # Find the highest green candle
-    highest_green = df[(df['close'] > df['open'])].copy()
+    # Find the highest green candle after last trade index
+    sub_df = df.iloc[state['last_trade_index']+1:] if state['last_trade_index'] >= 0 else df
+    highest_green = sub_df[(sub_df['close'] > sub_df['open'])].copy()
     if not highest_green.empty:
         highest_idx = highest_green['high'].idxmax()
         green_anchor_price = highest_green.loc[highest_idx, 'close']
         anchor_index = df.index.get_loc(highest_idx)
 
-    for i in range(1, len(df)):
+    for i in range(anchor_index + 1, len(df)):
         current = df.iloc[i]
         if green_anchor_price and state["holding"] == 0:
             if green_anchor_price - current['low'] >= state['dip_threshold']:
@@ -139,6 +141,7 @@ elif strategy_mode == "Green Candle Dip Strategy":
                 state["holding"] = state["balance"] / current['low']
                 state["balance"] = 0
                 state["buy_log"].append((i, current['low']))
+                state['last_trade_index'] = i
                 message = f"✅ Strategy Buy at ₱{current['low']:.2f} from Green ₱{green_anchor_price:.2f}"
                 break
 
@@ -148,6 +151,7 @@ elif strategy_mode == "Green Candle Dip Strategy":
                 state["balance"] = state["holding"] * current['close']
                 state["holding"] = 0
                 state["sell_log"].append((i, current['close']))
+                state['last_trade_index'] = i
                 message = f"💰 Strategy Sell at ₱{current['close']:.2f} (Profit: ₱{profit:.2f})"
                 break
 
