@@ -124,14 +124,15 @@ elif strategy_mode == "Automatic":
         message = f"💰 Auto-Sold at ₱{live_price:.2f}"
 
 elif strategy_mode == "Green Candle Dip Strategy":
+    # Find the highest green candle
+    highest_green = df[(df['close'] > df['open'])].copy()
+    if not highest_green.empty:
+        highest_idx = highest_green['high'].idxmax()
+        green_anchor_price = highest_green.loc[highest_idx, 'close']
+        anchor_index = df.index.get_loc(highest_idx)
+
     for i in range(1, len(df)):
         current = df.iloc[i]
-        prev = df.iloc[i - 1]
-
-        if current['close'] > current['open'] and prev['close'] <= prev['open']:
-            green_anchor_price = current['close']
-            anchor_index = i
-
         if green_anchor_price and state["holding"] == 0:
             if green_anchor_price - current['low'] >= state['dip_threshold']:
                 state["buy_price"] = current['low']
