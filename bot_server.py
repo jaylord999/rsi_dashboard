@@ -76,4 +76,5 @@ def handle_reset():
     return jsonify({"status": "Bot reset", "config": config, "state": state})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000)) # Get port from environment variable, default to 10000
+    app.run(host="0.0.0.0", port=port)
