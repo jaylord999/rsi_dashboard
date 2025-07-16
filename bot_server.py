@@ -54,6 +54,10 @@ def handle_trade():
 
     return jsonify({"status": "Trade executed", "state": state})
 
+@app.route("/ping", methods=["GET"])
+def handle_ping():
+    return jsonify({"status": "pong"}), 200
+
 @app.route("/reset", methods=["POST"])
 def handle_reset():
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
